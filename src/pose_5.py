@@ -2,6 +2,7 @@ import numpy as np
 from helperfunctions import add_pose_from_global, add_landmark_measurement_from_global
 import gtsam
 from gtsam.symbol_shorthand import L, X
+import math
 
 PRIOR_NOISE = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.05]))  # (x, y, theta)
 ODOMETRY_NOISE = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.2, 0.2, 0.1]))  # (dx, dy, dtheta)
@@ -61,21 +62,71 @@ def minimize_marginals(graph, initial_estimate, pose_options):
     sum_of_marginals = marginals.marginalCovariance(L(1)).sum() + marginals.marginalCovariance(L(2)).sum()
 
     print('sum of marginals: ', sum_of_marginals)
-    
+
     return best_pose, best_landmark, sum_of_marginals
 
 def minimize_errors(graph, initial_estimate, pose_options):
-    #TODO: try different pose and landmark options here, and keep the one with the lowest resulting error.
-    best_pose = "a"      # chosen pose option
-    best_landmark = 1    # chosen landmark (1 or 2)
+    # Ground truth for the first three poses (from notebook setup)
+    true_poses = {
+        X(1): gtsam.Pose2(0.0, 0.0, 0.0),
+        X(2): gtsam.Pose2(2.0, 0.0, 0.0),
+        X(3): gtsam.Pose2(4.0, 0.0, 0.0),
+    }
+
+    best_pose      = None
+    best_landmark  = None
+    best_sum       = float('inf')
+
+    # Try all combinations of pose option (a/b/c/d) and landmark (1 or 2)
+    for pose_key, pose_5 in pose_options.items():
+        for landmark in [1, 2]:
+
+            # Work on copies so each trial starts from the same state
+            graph_copy    = graph.clone()
+            estimate_copy = gtsam.Values(initial_estimate)
+
+            # Add X(5) and optimize
+            graph_copy, estimate_copy = add_pose(graph_copy, estimate_copy, pose_5)
+            result = optimize(graph_copy, estimate_copy)
+
+            # Add landmark measurement and optimize again
+            graph_copy = add_landmark_measurement(graph_copy, result, pose_5, landmark)
+            result     = optimize(graph_copy, estimate_copy)
+
+            # Compute error for X(1), X(2), X(3)
+            list_of_errors = []
+            for key, true_pose in true_poses.items():
+                est   = result.atPose2(key)
+                dx    = est.x() - true_pose.x()
+                dy    = est.y() - true_pose.y()
+                list_of_errors.append(math.sqrt(dx**2 + dy**2))
+
+            sum_of_errors = sum(list_of_errors)
+            print(f"Pose {pose_key}, Landmark {landmark}: error sum = {sum_of_errors:.6f}")
+
+            if sum_of_errors < best_sum:
+                best_sum      = sum_of_errors
+                best_pose     = pose_key
+                best_landmark = landmark
+
+    # Rebuild final graph with the winning combination
     pose_5 = pose_options[best_pose]
     graph, initial_estimate = add_pose(graph, initial_estimate, pose_5)
     result = optimize(graph, initial_estimate)
-    graph = add_landmark_measurement(graph, result, pose_5, best_landmark)
+    graph  = add_landmark_measurement(graph, result, pose_5, best_landmark)
     result = optimize(graph, initial_estimate)
 
-    # TODO: create a list of errors (each index corresponds to a pose) and add the error of each pose to the list
+    # Compute final error list for the best combination
     list_of_errors = []
-    # TODO: compute the sum of the errors and return it along with the best pose and landmark
-    sum_of_errors = 0
-    return best_pose, best_landmark, sum_of_errors 
+    for key, true_pose in true_poses.items():
+        est = result.atPose2(key)
+        dx  = est.x() - true_pose.x()
+        dy  = est.y() - true_pose.y()
+        list_of_errors.append(math.sqrt(dx**2 + dy**2))
+
+    sum_of_errors = sum(list_of_errors)
+
+    print(f"\nBest pose: {best_pose}, Best landmark: {best_landmark}")
+    print(f"Sum of errors: {sum_of_errors:.6f}")
+
+    return best_pose, best_landmark, sum_of_errors
